@@ -16,6 +16,7 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       apiVersion: '2024-10',
     },
     autods: {
+      mode: 'live',
       apiBase: 'https://api.autods.com',
       apiToken: 'autods-token',
       storeId: 'store-1',

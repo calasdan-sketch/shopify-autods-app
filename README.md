@@ -50,6 +50,34 @@ Shopify  ──webhooks──▶  /webhooks/shopify ──▶  Orchestrator ─�
 - Node.js >= 20
 - npm
 
+## Run it now, with no AutoDS account (mock / dry-run mode)
+
+AutoDS only hands out its API docs after activation, so the real client is
+still a placeholder. Until then the app has a built-in **mock AutoDS** so the
+whole pipeline can run today:
+
+```bash
+npm install
+npm run dry-run
+```
+
+`dry-run` walks source → generate → publish → fulfill → track in one go with
+zero credentials (mock AutoDS, stubbed Shopify and Claude, in-memory SQLite)
+and prints each step. It ends with `PASS` when every stage completed.
+
+To run the real server against **real Shopify + Claude** but a **fake AutoDS**,
+set in `.env`:
+
+```
+AUTODS_MODE=mock
+```
+
+The mock serves a small sample catalogue (`mock-1001`, `mock-1002`,
+`mock-1003` — the last one is out of stock on purpose), accepts orders, and
+reports `shipped` with a `MOCKTRK…` tracking number on the next sync. Switch
+to `AUTODS_MODE=live` once the token and confirmed endpoint paths arrive;
+nothing else changes.
+
 ## Setup
 
 ```bash

@@ -30,6 +30,8 @@ const configSchema = z.object({
   }),
 
   autods: z.object({
+    /** `live` calls the real API; `mock` uses an in-memory fake (no creds). */
+    mode: z.enum(['live', 'mock']).default('live'),
     apiBase: z.string().default('https://api.autods.com'),
     apiToken: z.string().default(''),
     storeId: z.string().default(''),
@@ -77,6 +79,7 @@ export function loadConfig(): AppConfig {
       apiVersion: process.env.SHOPIFY_API_VERSION,
     },
     autods: {
+      mode: process.env.AUTODS_MODE,
       apiBase: process.env.AUTODS_API_BASE,
       apiToken: process.env.AUTODS_API_TOKEN,
       storeId: process.env.AUTODS_STORE_ID,

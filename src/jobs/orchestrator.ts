@@ -2,7 +2,7 @@ import type { AppConfig } from '../config/index.js';
 import { loadConfig } from '../config/index.js';
 import { createLogger } from '../lib/logger.js';
 import { Repository } from '../models/repository.js';
-import { AutoDSService } from '../services/autods.js';
+import { createAutoDSService, type AutoDSClient } from '../services/autods.js';
 import { ClaudeService } from '../services/claude.js';
 import { ShopifyService } from '../services/shopify.js';
 
@@ -12,7 +12,7 @@ export interface OrchestratorDeps {
   config?: AppConfig;
   repo?: Repository;
   shopify?: ShopifyService;
-  autods?: AutoDSService;
+  autods?: AutoDSClient;
   claude?: ClaudeService;
 }
 
@@ -27,14 +27,14 @@ export class Orchestrator {
   private readonly config: AppConfig;
   private readonly repo: Repository;
   private readonly shopify: ShopifyService;
-  private readonly autods: AutoDSService;
+  private readonly autods: AutoDSClient;
   private readonly claude: ClaudeService;
 
   constructor(deps: OrchestratorDeps = {}) {
     this.config = deps.config ?? loadConfig();
     this.repo = deps.repo ?? new Repository();
     this.shopify = deps.shopify ?? new ShopifyService(this.config);
-    this.autods = deps.autods ?? new AutoDSService(this.config);
+    this.autods = deps.autods ?? createAutoDSService(this.config);
     this.claude =
       deps.claude ??
       new ClaudeService({ config: this.config, repo: this.repo });
