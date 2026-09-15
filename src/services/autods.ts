@@ -3,6 +3,7 @@ import { loadConfig } from '../config/index.js';
 import { ConfigError } from '../lib/errors.js';
 import { requestJson } from '../lib/http.js';
 import { createLogger } from '../lib/logger.js';
+import { MockAutoDSService } from './autods-mock.js';
 
 const log = createLogger('autods');
 
@@ -32,6 +33,19 @@ export interface AutoDSOrderResult {
 }
 
 /**
+ * The surface the rest of the app depends on. Both the real HTTP client and
+ * the in-memory mock implement it, so callers never need to know which one
+ * they were given.
+ */
+export interface AutoDSClient {
+  readonly mode: 'live' | 'mock';
+  listProducts(limit?: number): Promise<AutoDSProduct[]>;
+  getProduct(productId: string): Promise<AutoDSProduct>;
+  createOrder(input: AutoDSOrderInput): Promise<AutoDSOrderResult>;
+  getOrderStatus(autodsOrderId: string): Promise<AutoDSOrderResult>;
+}
+
+/**
  * Client for the AutoDS API.
  *
  * NOTE: AutoDS's public API surface varies by plan tier. Endpoint paths here
@@ -39,7 +53,8 @@ export interface AutoDSOrderResult {
  * account's actual API once confirmed. All requests flow through the shared
  * retry/backoff HTTP helper.
  */
-export class AutoDSService {
+export class AutoDSService implements AutoDSClient {
+  readonly mode = 'live' as const;
   private readonly config: AppConfig['autods'];
 
   constructor(config: AppConfig = loadConfig()) {
@@ -113,4 +128,20 @@ export class AutoDSService {
     );
     return response;
   }
+}
+
+/**
+ * Pick the AutoDS client for the current configuration.
+ *
+ * `AUTODS_MODE=mock` returns an in-memory fake so the whole pipeline can run
+ * end-to-end with no AutoDS credentials. Anything else returns the real
+ * HTTP client.
+ */
+export function createAutoDSService(
+  config: AppConfig = loadConfig(),
+): AutoDSClient {
+  if (config.autods.mode === 'mock') {
+    return new MockAutoDSService();
+  }
+  return new AutoDSService(config);
 }
