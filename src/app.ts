@@ -1,6 +1,8 @@
 import express, { type Express, type Request, type Response } from 'express';
 import { createWebhookRouter } from './routes/webhooks.js';
 import { createAdminRouter } from './routes/admin.js';
+import { loadConfig } from './config/index.js';
+import { adminAuth } from './lib/admin-auth.js';
 
 /**
  * Assemble the Express application.
@@ -16,7 +18,7 @@ export function createApp(): Express {
   });
 
   app.use('/webhooks/shopify', createWebhookRouter());
-  app.use('/admin', createAdminRouter());
+  app.use('/admin', adminAuth(loadConfig().admin.token), createAdminRouter());
 
   return app;
 }

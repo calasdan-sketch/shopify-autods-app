@@ -29,6 +29,26 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       openrouterApiKey: '',
       openrouterModel: 'anthropic/claude-3.5-sonnet',
     },
+    pricing: {
+      targetMarginPct: 30,
+      minMarginPct: 15,
+      paymentFeePct: 0,
+      paymentFixedFee: 0,
+      charmPricing: false,
+    },
+    // Gate is OFF in the shared fixture so legacy tests with minimal order
+    // payloads keep working; risk-specific tests turn it on explicitly.
+    risk: {
+      enabled: false,
+      requirePaid: true,
+      maxQuantityPerLine: 5,
+      maxOrderValue: 500,
+      allowedCountries: [],
+      maxOrdersPerEmailPerDay: 3,
+      maxOrderAgeDays: 7,
+    },
+    admin: { token: 'admin-secret' },
+    compliance: { blockedTerms: ['replica'] },
     automation: {
       autoPublish: false,
       autoFulfill: false,

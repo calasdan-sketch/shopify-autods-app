@@ -19,6 +19,6 @@
     "noFallthroughCasesInSwitch": true,
     "verbatimModuleSyntax": false
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "bench/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

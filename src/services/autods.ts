@@ -108,6 +108,8 @@ export class AutoDSService implements AutoDSClient {
     const response = await requestJson<AutoDSOrderResult>(this.url('/orders'), {
       method: 'POST',
       headers: this.headers(),
+      // Supplier orders cost real money: never blind-retry an unknown outcome.
+      idempotent: false,
       body: {
         store_id: this.config.storeId,
         external_order_id: input.shopifyOrderId,

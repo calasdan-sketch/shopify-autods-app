@@ -26,6 +26,7 @@ export function startScheduler(
     syncCron,
     async () => {
       try {
+        await orchestrator.processReceivedOrders();
         await orchestrator.syncOrderTracking();
       } catch (error) {
         log.error({ err: String(error) }, 'Order tracking sync failed');

@@ -13,6 +13,17 @@ const booleanFromEnv = z
   .optional()
   .transform((value) => value === 'true' || value === '1');
 
+const numFromEnv = (def: number) => z.coerce.number().finite().default(def);
+const listFromEnv = z
+  .string()
+  .optional()
+  .transform((v) =>
+    (v ?? '')
+      .split(',')
+      .map((x) => x.trim().toUpperCase())
+      .filter(Boolean),
+  );
+
 const configSchema = z.object({
   nodeEnv: z.enum(['development', 'test', 'production']).default('development'),
   port: z.coerce.number().int().positive().default(3000),
@@ -44,6 +55,35 @@ const configSchema = z.object({
     provider: z.enum(['anthropic', 'openrouter']).default('anthropic'),
     openrouterApiKey: z.string().default(''),
     openrouterModel: z.string().default('anthropic/claude-3.5-sonnet'),
+  }),
+
+  /** Rates are YOURS to set: they vary by Shopify plan and country. */
+  pricing: z.object({
+    targetMarginPct: numFromEnv(30),
+    minMarginPct: numFromEnv(15),
+    paymentFeePct: numFromEnv(0),
+    paymentFixedFee: numFromEnv(0),
+    charmPricing: z.boolean(),
+  }),
+
+  risk: z.object({
+    enabled: z.boolean(),
+    requirePaid: z.boolean(),
+    maxQuantityPerLine: numFromEnv(5),
+    maxOrderValue: numFromEnv(500),
+    allowedCountries: z.array(z.string()),
+    maxOrdersPerEmailPerDay: numFromEnv(3),
+    maxOrderAgeDays: numFromEnv(7),
+  }),
+
+  admin: z.object({
+    /** Bearer token required for /admin. Unset = /admin refuses all calls. */
+    token: z.string().default(''),
+  }),
+
+  /** Product titles/descriptions containing these words are held for review. */
+  compliance: z.object({
+    blockedTerms: z.array(z.string()),
   }),
 
   automation: z.object({
@@ -91,6 +131,32 @@ export function loadConfig(): AppConfig {
       provider: process.env.CLAUDE_PROVIDER,
       openrouterApiKey: process.env.OPENROUTER_API_KEY,
       openrouterModel: process.env.OPENROUTER_MODEL,
+    },
+    pricing: {
+      targetMarginPct: process.env.PRICING_TARGET_MARGIN_PCT,
+      minMarginPct: process.env.PRICING_MIN_MARGIN_PCT,
+      paymentFeePct: process.env.PRICING_PAYMENT_FEE_PCT,
+      paymentFixedFee: process.env.PRICING_PAYMENT_FIXED_FEE,
+      charmPricing: process.env.PRICING_CHARM !== 'false',
+    },
+    risk: {
+      enabled: process.env.RISK_GATE !== 'off',
+      requirePaid: process.env.RISK_REQUIRE_PAID !== 'false',
+      maxQuantityPerLine: process.env.RISK_MAX_QTY_PER_LINE,
+      maxOrderValue: process.env.RISK_MAX_ORDER_VALUE,
+      allowedCountries: listFromEnv.parse(process.env.RISK_ALLOWED_COUNTRIES),
+      maxOrdersPerEmailPerDay: process.env.RISK_MAX_ORDERS_PER_EMAIL_PER_DAY,
+      maxOrderAgeDays: process.env.RISK_MAX_ORDER_AGE_DAYS,
+    },
+    admin: { token: process.env.ADMIN_TOKEN },
+    compliance: {
+      blockedTerms: (
+        process.env.BLOCKED_TERMS ??
+        'nike,adidas,disney,marvel,pokemon,apple,samsung,gucci,louis vuitton,rolex,replica,counterfeit,vape,cbd'
+      )
+        .split(',')
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean),
     },
     automation: {
       autoPublish: booleanFromEnv.parse(process.env.AUTO_PUBLISH),

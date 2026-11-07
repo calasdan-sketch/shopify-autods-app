@@ -66,6 +66,33 @@ CREATE TABLE IF NOT EXISTS team_members (
 );
 `;
 
+function addColumnIfMissing(
+  db: Database.Database,
+  table: string,
+  column: string,
+  ddl: string,
+): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+  }>;
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+}
+
+/** Additive, idempotent migrations so existing databases keep working. */
+function migrate(db: Database.Database): void {
+  addColumnIfMissing(db, 'orders', 'notes', 'TEXT');
+  addColumnIfMissing(db, 'orders', 'email', 'TEXT');
+  addColumnIfMissing(db, 'product_mappings', 'cost', 'REAL');
+  addColumnIfMissing(db, 'product_mappings', 'sell_price', 'REAL');
+  addColumnIfMissing(db, 'product_mappings', 'stock', 'INTEGER');
+  addColumnIfMissing(db, 'product_mappings', 'notes', 'TEXT');
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_orders_email ON orders (email, created_at)',
+  );
+}
+
 /**
  * Create a new database connection at the given path and apply the schema.
  *
@@ -76,6 +103,7 @@ export function createDatabase(path: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
 }
 

@@ -38,9 +38,74 @@ export function createAdminRouter(
     res.json({ products: repo.listProductMappings() });
   });
 
-  router.get('/orders', (_req: Request, res: Response) => {
-    res.json({ orders: repo.listOrders() });
+  // Customer PII (raw webhook payload) is omitted unless ?raw=1 is asked for.
+  router.get('/orders', (req: Request, res: Response) => {
+    const raw = req.query.raw === '1';
+    const orders = repo
+      .listOrders()
+      .map((o) => (raw ? o : { ...o, raw_payload: undefined }));
+    res.json({ orders });
   });
+
+  // Orders the risk gate or a supplier failure parked for a human.
+  router.get('/orders/held', (_req: Request, res: Response) => {
+    const orders = repo
+      .listOrdersByStatus([
+        'held',
+        'forward_failed',
+        'needs_review',
+        'supplier_issue',
+      ])
+      .map((o) => ({ ...o, raw_payload: undefined }));
+    res.json({ orders });
+  });
+
+  // Human override: forward a held/failed order to the supplier.
+  router.post('/orders/:id/release', async (req: Request, res: Response) => {
+    const id = String(req.params.id);
+    const order = repo.getOrder(id);
+    if (!order) {
+      res.status(404).json({ error: 'order not found' });
+      return;
+    }
+    if (
+      order.fulfillment_status === 'needs_review' &&
+      req.body?.confirmNotOrdered !== true
+    ) {
+      res.status(409).json({
+        error:
+          'AutoDS outcome was unknown. Check AutoDS first, then repeat with {"confirmNotOrdered": true}',
+      });
+      return;
+    }
+    if (order.fulfillment_status === 'needs_review') {
+      repo.transitionOrder(id, ['needs_review'], 'forward_failed');
+    }
+    try {
+      res.json(await orchestrator.releaseOrder(id));
+    } catch (error) {
+      log.error({ err: String(error) }, 'Release failed');
+      res.status(502).json({ error: 'release failed' });
+    }
+  });
+
+  // Publish a staged product after its staged_listing content was approved.
+  router.post(
+    '/products/:autodsProductId/publish',
+    async (req: Request, res: Response) => {
+      try {
+        res.json(
+          await orchestrator.publishApproved(
+            String(req.params.autodsProductId),
+          ),
+        );
+      } catch (error) {
+        res.status(409).json({
+          error: String(error instanceof Error ? error.message : error),
+        });
+      }
+    },
+  );
 
   router.get('/ai-content', (_req: Request, res: Response) => {
     res.json({ content: repo.listAiContent() });

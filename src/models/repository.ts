@@ -8,6 +8,10 @@ export interface ProductMapping {
   shopify_product_id: string | null;
   shopify_variant_id: string | null;
   status: string;
+  cost?: number | null;
+  sell_price?: number | null;
+  stock?: number | null;
+  notes?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -19,6 +23,8 @@ export interface OrderRecord {
   fulfillment_status: string;
   tracking_number: string | null;
   raw_payload: string | null;
+  notes?: string | null;
+  email?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -66,13 +72,21 @@ export class Repository {
     shopifyProductId?: string | null;
     shopifyVariantId?: string | null;
     status?: string;
+    cost?: number | null;
+    sellPrice?: number | null;
+    stock?: number | null;
+    notes?: string | null;
   }): ProductMapping {
     this.db
       .prepare(
         `INSERT INTO product_mappings
-           (autods_product_id, autods_sku, shopify_product_id, shopify_variant_id, status)
-         VALUES (@autodsProductId, @autodsSku, @shopifyProductId, @shopifyVariantId, @status)
+           (autods_product_id, autods_sku, shopify_product_id, shopify_variant_id, status, cost, sell_price, stock, notes)
+         VALUES (@autodsProductId, @autodsSku, @shopifyProductId, @shopifyVariantId, @status, @cost, @sellPrice, @stock, @notes)
          ON CONFLICT(autods_product_id) DO UPDATE SET
+           cost = COALESCE(excluded.cost, product_mappings.cost),
+           sell_price = COALESCE(excluded.sell_price, product_mappings.sell_price),
+           stock = COALESCE(excluded.stock, product_mappings.stock),
+           notes = excluded.notes,
            autods_sku = COALESCE(excluded.autods_sku, product_mappings.autods_sku),
            shopify_product_id = COALESCE(excluded.shopify_product_id, product_mappings.shopify_product_id),
            shopify_variant_id = COALESCE(excluded.shopify_variant_id, product_mappings.shopify_variant_id),
@@ -85,6 +99,10 @@ export class Repository {
         shopifyProductId: input.shopifyProductId ?? null,
         shopifyVariantId: input.shopifyVariantId ?? null,
         status: input.status ?? 'pending',
+        cost: input.cost ?? null,
+        sellPrice: input.sellPrice ?? null,
+        stock: input.stock ?? null,
+        notes: input.notes ?? null,
       });
 
     return this.getProductMapping(input.autodsProductId) as ProductMapping;
@@ -135,6 +153,81 @@ export class Repository {
       });
 
     return this.getOrder(input.shopifyOrderId) as OrderRecord;
+  }
+
+  /**
+   * Insert an order in `received` state ONLY if it is new. Never touches an
+   * existing row, so a replayed webhook cannot reset a forwarded/fulfilled
+   * order back to `received`. Returns whether this call created the row.
+   */
+  insertOrderIfNew(input: {
+    shopifyOrderId: string;
+    rawPayload: unknown;
+    email?: string | null;
+  }): boolean {
+    const r = this.db
+      .prepare(
+        `INSERT OR IGNORE INTO orders
+           (shopify_order_id, fulfillment_status, raw_payload, email)
+         VALUES (?, 'received', ?, ?)`,
+      )
+      .run(
+        input.shopifyOrderId,
+        JSON.stringify(input.rawPayload),
+        input.email ?? null,
+      );
+    return r.changes === 1;
+  }
+
+  /**
+   * Atomically move an order from one of `from` to `to`. Returns true for the
+   * single caller that wins; concurrent/replayed callers get false.
+   */
+  transitionOrder(
+    shopifyOrderId: string,
+    from: string[],
+    to: string,
+    notes?: string | null,
+  ): boolean {
+    const marks = from.map(() => '?').join(',');
+    const r = this.db
+      .prepare(
+        `UPDATE orders SET fulfillment_status = ?, notes = COALESCE(?, notes),
+           updated_at = datetime('now')
+         WHERE shopify_order_id = ? AND fulfillment_status IN (${marks})`,
+      )
+      .run(to, notes ?? null, shopifyOrderId, ...from);
+    return r.changes === 1;
+  }
+
+  setOrderNotes(shopifyOrderId: string, notes: string | null): void {
+    this.db
+      .prepare(
+        `UPDATE orders SET notes = ?, updated_at = datetime('now') WHERE shopify_order_id = ?`,
+      )
+      .run(notes, shopifyOrderId);
+  }
+
+  listOrdersByStatus(statuses: string[]): OrderRecord[] {
+    const marks = statuses.map(() => '?').join(',');
+    return this.db
+      .prepare(
+        `SELECT * FROM orders WHERE fulfillment_status IN (${marks}) ORDER BY id ASC`,
+      )
+      .all(...statuses) as OrderRecord[];
+  }
+
+  /** Orders from this email in the last 24h, excluding `excludeOrderId`. */
+  countRecentOrdersForEmail(email: string, excludeOrderId: string): number {
+    if (!email) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM orders
+         WHERE email = ? AND shopify_order_id != ?
+           AND created_at >= datetime('now', '-1 day')`,
+      )
+      .get(email, excludeOrderId) as { n: number };
+    return row.n;
   }
 
   getOrder(shopifyOrderId: string): OrderRecord | undefined {
@@ -208,6 +301,18 @@ export class Repository {
         'SELECT * FROM ai_content WHERE prompt_hash = ? ORDER BY id DESC LIMIT 1',
       )
       .get(promptHash) as AiContentRecord | undefined;
+  }
+
+  findLatestAiContentForProduct(
+    autodsProductId: string,
+    contentType = 'product_content',
+  ): AiContentRecord | undefined {
+    return this.db
+      .prepare(
+        `SELECT * FROM ai_content WHERE autods_product_id = ? AND content_type = ?
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(autodsProductId, contentType) as AiContentRecord | undefined;
   }
 
   updateAiContentStatus(id: number, status: string): void {

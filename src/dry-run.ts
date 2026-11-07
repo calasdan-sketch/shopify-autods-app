@@ -104,11 +104,28 @@ async function main(): Promise<void> {
 
   const fakeOrder = {
     id: 90001,
+    email: 'buyer@example.test',
+    financial_status: 'paid',
+    total_price: '85.98',
     line_items: [{ sku: catalogue[0].sku, quantity: 2 }],
-    shipping_address: { city: 'Winnipeg', province: 'MB', country: 'CA' },
+    shipping_address: {
+      address1: '1 Example St',
+      city: 'Winnipeg',
+      province: 'MB',
+      zip: 'R3C 0A1',
+      country_code: 'CA',
+    },
   };
   const forwarded = await orchestrator.handleOrderCreated(fakeOrder);
   step(4, 'fulfill → order forwarded to AutoDS (mock)', forwarded);
+
+  // Safety demo: an UNPAID order must be held, not sent to the supplier.
+  const unpaid = await orchestrator.handleOrderCreated({
+    ...fakeOrder,
+    id: 90002,
+    financial_status: 'pending',
+  });
+  step(4, 'risk gate → unpaid order held, not forwarded', unpaid);
 
   const synced = await orchestrator.syncOrderTracking();
   step(5, 'track → syncOrderTracking updated orders', { synced });
@@ -127,8 +144,10 @@ async function main(): Promise<void> {
   const ok =
     imported.published &&
     forwarded.forwarded &&
+    !unpaid.forwarded &&
     synced === 1 &&
-    orders[0]?.fulfillment_status === 'fulfilled';
+    orders.find((o) => o.shopify_order_id === '90001')?.fulfillment_status ===
+      'fulfilled';
   // eslint-disable-next-line no-console
   console.log(
     ok ? '[dry-run] PASS — pipeline ran end-to-end' : '[dry-run] FAIL',

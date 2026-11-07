@@ -1,11 +1,14 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { AppConfig } from '../config/index.js';
 import { loadConfig } from '../config/index.js';
-import { ConfigError } from '../lib/errors.js';
+import { AppError, ConfigError } from '../lib/errors.js';
 import { requestJson } from '../lib/http.js';
 import { createLogger } from '../lib/logger.js';
 
 const log = createLogger('shopify');
+
+/** Nothing left to fulfil for this order in Shopify. */
+export class NoOpenFulfillmentOrderError extends AppError {}
 
 export interface ShopifyProductInput {
   title: string;
@@ -145,7 +148,13 @@ export class ShopifyService {
     log.info({ title: input.title }, 'Creating Shopify product');
     const response = await requestJson<{ product: ShopifyProduct }>(
       `${this.baseUrl()}/products.json`,
-      { method: 'POST', headers: this.headers(), body: payload },
+      {
+        method: 'POST',
+        headers: this.headers(),
+        body: payload,
+        // A timed-out create may have succeeded; repeating would list twice.
+        idempotent: false,
+      },
     );
     return response.product;
   }
@@ -197,25 +206,56 @@ export class ShopifyService {
     return response.order;
   }
 
+  /**
+   * Mark an order shipped with tracking.
+   *
+   * Uses the FulfillmentOrder flow (list the order's fulfillment orders, then
+   * POST /fulfillments.json) because the older
+   * POST /orders/{id}/fulfillments.json endpoint was retired in newer Admin
+   * API versions. UNVERIFIED against a live store: no store calls were made
+   * when this was written; test on a development store first.
+   *
+   * Throws {@link NoOpenFulfillmentOrderError} when nothing is left to
+   * fulfil (already shipped, cancelled, or handled elsewhere).
+   */
   async createFulfillment(
     orderId: string | number,
     input: {
       trackingNumber?: string;
       trackingCompany?: string;
-      lineItems?: Array<{ id: number; quantity: number }>;
+      notifyCustomer?: boolean;
     },
   ): Promise<Record<string, unknown>> {
     log.info({ orderId }, 'Creating fulfillment');
+    const fo = await requestJson<{
+      fulfillment_orders: Array<{ id: number; status: string }>;
+    }>(`${this.baseUrl()}/orders/${orderId}/fulfillment_orders.json`, {
+      headers: this.headers(),
+    });
+    const open = (fo.fulfillment_orders ?? []).filter(
+      (f) => f.status === 'open' || f.status === 'in_progress',
+    );
+    if (open.length === 0) {
+      throw new NoOpenFulfillmentOrderError(
+        `Order ${orderId} has no open fulfillment orders`,
+      );
+    }
     const response = await requestJson<{
       fulfillment: Record<string, unknown>;
-    }>(`${this.baseUrl()}/orders/${orderId}/fulfillments.json`, {
+    }>(`${this.baseUrl()}/fulfillments.json`, {
       method: 'POST',
       headers: this.headers(),
+      idempotent: false,
       body: {
         fulfillment: {
-          tracking_number: input.trackingNumber,
-          tracking_company: input.trackingCompany,
-          line_items: input.lineItems,
+          line_items_by_fulfillment_order: open.map((f) => ({
+            fulfillment_order_id: f.id,
+          })),
+          notify_customer: input.notifyCustomer ?? true,
+          tracking_info: {
+            number: input.trackingNumber,
+            company: input.trackingCompany,
+          },
         },
       },
     });

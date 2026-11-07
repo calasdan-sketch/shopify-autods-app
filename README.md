@@ -9,6 +9,77 @@ content and score products for viability.
 > varies by plan) and should be confirmed against your account before going
 > live.
 
+**In one line:** the Shopify + AutoDS glue that refuses to lose money: no
+duplicate or unpaid supplier orders, no listings at cost, no open admin API.
+
+## What 0.2 adds (expert-review round)
+
+Found by testing as a dropshipping operator, a Shopify app developer, a
+margin analyst, a fraud/compliance reviewer and a first-time merchant:
+
+| Problem found in 0.1 | Fix in 0.2 |
+| --- | --- |
+| Products were listed at the **supplier cost** (0% margin) | Margin engine: price from cost, fees and target margin; refuses to list below the margin floor |
+| A replayed or concurrent order webhook placed the **supplier order again** and reset fulfilled orders to `received` | Atomic claim per order: exactly one supplier order, replays are no-ops |
+| Unpaid, cancelled, test, address-less or oversized orders were forwarded to the supplier | Risk gate holds them for a human (`/admin/orders/held`, `/release`) |
+| A timed-out supplier POST was retried blindly (could double-buy) | Non-idempotent calls retry only on HTTP 429; unknown outcome parks the order in `needs_review` |
+| `/admin` (orders, customer addresses, import) had **no authentication** | Bearer `ADMIN_TOKEN`; unset means every admin call is refused (fail closed) |
+| "Approve" never published anything (dead-end human-in-the-loop) | `POST /admin/products/:id/publish` publishes approved listings |
+| Order stored only after the 200 was sent (lost on crash) | Stored first; scheduler recovers stuck orders |
+| One failed order aborted the whole tracking sync | Per-order isolation; supplier cancellations flagged |
+| LLM/supplier text published unsanitised (HTML/bidi/prompt injection) | Allow-list HTML sanitiser, control/bidi stripping, supplier text fenced in the prompt |
+| Out-of-stock and brand/restricted-term products could be listed | Stock check and configurable blocked terms (starter list; tune it) |
+| Fulfilment used the retired order-level endpoint | FulfillmentOrder flow (`/fulfillment_orders.json` then `/fulfillments.json`), **untested against a live store** |
+
+### Benchmark (re-run: `npm run bench`)
+
+Simulated traffic: 2,000 orders, 2,608 webhook deliveries (30% duplicated),
+8% unpaid, 4% cancelled, 1% test. The OLD column re-implements 0.1 behaviour.
+
+| Metric | 0.1 behaviour | 0.2 |
+| --- | ---: | ---: |
+| Supplier orders placed | 2608 | 1748 |
+| Wrong supplier orders | 860 | 0 |
+| Money spent on wrong orders (14.50 each) | 12470.00 | 0.00 |
+| Listing price of a 14.50 item | 14.50 | 20.99 |
+| Margin before fees | 0% | 30.9% |
+
+This is a simulation of the stated mix, not a measurement of a real store.
+
+### How it compares (read from vendor pages, checked 2026-11-07)
+
+| | This repo | AutoDS | DSers |
+| --- | --- | --- | --- |
+| Cost | Free (MIT); you pay for Claude API use | Paid subscription, 3-day trial ([pricing](https://www.autods.com/pricing/)); plan prices not verified | Free Basic plan; Advanced $19.90/mo, Pro $49.90/mo ([pricing](https://www.dsers.com/pricing)) |
+| AI listing text | Yes (Claude) | Yes, plus a "Claude AI chat-to-sell" feature (per pricing page) | AI image tools; AI optimisations on paid plans |
+| Auto order forwarding | Yes, with risk gate and exactly-once claim | Yes (vendor feature; internal safeguards unverified) | Bulk order automation, address auto-fix |
+| Tracking sync | Yes | Yes | Yes (14 to 21 day sync windows by plan) |
+| Auto pricing / stock sync | Pricing from margin engine; stock check at import only (no live stock sync yet) | Yes | Yes |
+| Supplier/product research, ad spy | No | Yes | Trending products |
+| Self-hosted, auditable, your data | Yes | No | No |
+| Needs your own Shopify custom app and webhooks | Yes | No | No |
+
+Zendrop, Spocket, Shopify Flow and Sidekick were **not** reviewed this round
+(unverified). Honest summary: the commercial tools win on product research,
+supplier networks and polish. This repo wins on being free, inspectable and
+safe-by-default for order handling, and on the margin/fraud rules being yours.
+
+### Limits (be honest with yourself)
+
+- The AutoDS client paths are still placeholders; use `AUTODS_MODE=mock`
+  until you have API access. Whether AutoDS de-duplicates on
+  `external_order_id` is unverified, so the app does not rely on it.
+- The risk gate sees only the webhook payload. Shopify's own fraud analysis
+  is not consulted; keep reviewing flagged orders in Shopify.
+- Fulfilment and product calls were not run against a live store.
+- Shopify's REST Admin API is legacy since 2024-10-01 and new public apps
+  must use GraphQL ([Shopify docs](https://shopify.dev/docs/api/admin-rest)).
+  A private custom app on REST still works but plan a GraphQL move.
+- Fee rates are yours to set (`PRICING_*`); defaults are 0 and a 30% margin
+  target is a policy choice, not advice. Blocked-terms list is a starter.
+- Compliance (customs, product safety, sales tax, supplier terms) is your
+  responsibility; nothing here is legal advice.
+
 ## Features
 
 - **Shopify integration** — create/update products, manage inventory, read
@@ -95,6 +166,7 @@ cp .env.example .env   # then fill in credentials
 | `AUTODS_API_TOKEN`       | AutoDS API token (plan-dependent)                        |
 | `AUTODS_STORE_ID`        | AutoDS store id                                          |
 | `ANTHROPIC_API_KEY`      | Anthropic API key for Claude                             |
+| `ADMIN_TOKEN`            | Secret for `/admin` (min 16 chars); unset = admin disabled |
 
 Secrets are read from environment variables only and must never be committed.
 
@@ -128,6 +200,7 @@ npm test             # run the test suite (vitest)
 npm run lint         # eslint
 npm run format       # prettier --write
 npm run typecheck    # tsc --noEmit
+npm run bench        # order-safety + pricing benchmark (no network)
 ```
 
 ## HTTP endpoints
@@ -148,6 +221,11 @@ npm run typecheck    # tsc --noEmit
 | POST   | `/admin/team/:id/deactivate`     | Deactivate a development team member |
 | POST   | `/admin/products/import`         | Import + generate content for a product |
 | POST   | `/admin/ai-content/:id/approve`  | Approve staged AI content           |
+| POST   | `/admin/products/:id/publish`    | Publish an approved staged listing  |
+| GET    | `/admin/orders/held`             | Orders held by the risk gate / failures |
+| POST   | `/admin/orders/:id/release`      | Human override: forward a held order |
+
+All `/admin` calls need `Authorization: Bearer $ADMIN_TOKEN` (min 16 chars).
 
 ## Three-repository operating model
 

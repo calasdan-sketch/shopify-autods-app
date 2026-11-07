@@ -13,7 +13,18 @@ export interface RequestOptions {
   baseDelayMs?: number;
   /** AbortSignal timeout in ms. Default 30000. */
   timeoutMs?: number;
+  /**
+   * Whether the request is safe to repeat. Default true (back-compat). Set
+   * false for calls that spend money or create things (supplier orders,
+   * product creation): they are then retried ONLY on 429, where the server
+   * has told us it did not process the request. A timeout or 5xx may mean
+   * the first attempt succeeded, and a blind retry would duplicate it.
+   */
+  idempotent?: boolean;
 }
+
+/** Longest Retry-After we will honour; a hostile header must not stall us. */
+const MAX_RETRY_AFTER_MS = 60_000;
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 
@@ -57,6 +68,7 @@ export async function requestJson<T>(
     maxRetries = 4,
     baseDelayMs = 500,
     timeoutMs = 30000,
+    idempotent = true,
   } = options;
 
   let lastError: unknown;
@@ -84,8 +96,13 @@ export async function requestJson<T>(
 
       const errorBody = await response.text();
 
-      if (RETRYABLE_STATUS.has(response.status) && attempt < maxRetries) {
-        const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
+      const retryable = idempotent
+        ? RETRYABLE_STATUS.has(response.status)
+        : response.status === 429;
+      if (retryable && attempt < maxRetries) {
+        const parsed = parseRetryAfter(response.headers.get('retry-after'));
+        const retryAfter =
+          parsed === null ? null : Math.min(parsed, MAX_RETRY_AFTER_MS);
         const backoff =
           retryAfter ??
           baseDelayMs * 2 ** (attempt - 1) + Math.floor(Math.random() * 100);
@@ -108,6 +125,16 @@ export async function requestJson<T>(
       // Do not retry non-retryable API errors.
       if (error instanceof ExternalApiError) {
         throw error;
+      }
+
+      if (!idempotent) {
+        // Outcome unknown (timeout / connection reset): do NOT repeat.
+        throw new ExternalApiError(
+          `Request to ${url} failed with unknown outcome: ${String(error)}`,
+          0,
+          undefined,
+          error,
+        );
       }
 
       if (attempt < maxRetries) {
