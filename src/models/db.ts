@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS ai_content (
 CREATE INDEX IF NOT EXISTS idx_ai_content_product
   ON ai_content (autods_product_id);
 
+CREATE TABLE IF NOT EXISTS order_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  shopify_order_id TEXT NOT NULL,
+  from_status TEXT,
+  to_status TEXT NOT NULL,
+  note TEXT,
+  at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_events_order
+  ON order_events (shopify_order_id, id);
+
 CREATE TABLE IF NOT EXISTS team_members (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,

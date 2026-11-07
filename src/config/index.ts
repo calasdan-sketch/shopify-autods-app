@@ -74,6 +74,9 @@ const configSchema = z.object({
     allowedCountries: z.array(z.string()),
     maxOrdersPerEmailPerDay: numFromEnv(3),
     maxOrderAgeDays: numFromEnv(7),
+    maxLineItems: numFromEnv(25),
+    holdBelowCost: z.boolean(),
+    requireKnownSku: z.boolean(),
   }),
 
   admin: z.object({
@@ -147,6 +150,9 @@ export function loadConfig(): AppConfig {
       allowedCountries: listFromEnv.parse(process.env.RISK_ALLOWED_COUNTRIES),
       maxOrdersPerEmailPerDay: process.env.RISK_MAX_ORDERS_PER_EMAIL_PER_DAY,
       maxOrderAgeDays: process.env.RISK_MAX_ORDER_AGE_DAYS,
+      maxLineItems: process.env.RISK_MAX_LINE_ITEMS,
+      holdBelowCost: process.env.RISK_HOLD_BELOW_COST !== 'false',
+      requireKnownSku: process.env.RISK_REQUIRE_KNOWN_SKU === 'true',
     },
     admin: { token: process.env.ADMIN_TOKEN },
     compliance: {

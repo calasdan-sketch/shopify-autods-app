@@ -73,6 +73,16 @@ export class Orchestrator {
     blocked?: string[];
   }> {
     log.info({ autodsProductId }, 'Importing product');
+    // Already listed (or being listed): never create a second Shopify product.
+    const existing = this.repo.getProductMapping(autodsProductId);
+    if (existing && ['published', 'publishing'].includes(existing.status)) {
+      return {
+        autodsProductId,
+        published: existing.status === 'published',
+        shopifyProductId: existing.shopify_product_id ?? undefined,
+        sellPrice: existing.sell_price ?? undefined,
+      };
+    }
     const product = await this.autods.getProduct(autodsProductId);
     const blocked: string[] = [];
 
@@ -140,7 +150,36 @@ export class Orchestrator {
       return { autodsProductId, published: false, sellPrice: price };
     }
 
-    return this.publish(product.id, product.sku, product.price, price, content);
+    // Atomic claim so two concurrent imports cannot both list the product.
+    if (existing?.status === 'blocked') {
+      // It passed every check this time (e.g. back in stock): unblock.
+      this.repo.setProductStatus(product.id, 'pending');
+    }
+    this.repo.ensureProductMapping({
+      autodsProductId: product.id,
+      autodsSku: product.sku ?? null,
+      cost: product.price,
+      sellPrice: price,
+      stock: product.stock ?? null,
+    });
+    if (!this.repo.claimProductForPublish(product.id)) {
+      return { autodsProductId, published: false, sellPrice: price };
+    }
+    try {
+      return await this.publish(
+        product.id,
+        product.sku,
+        product.price,
+        price,
+        content,
+      );
+    } catch (error) {
+      const st = error instanceof ExternalApiError ? error.status : 0;
+      if (st >= 400 && st < 500) {
+        this.repo.setProductStatus(product.id, 'pending');
+      }
+      throw error;
+    }
   }
 
   /**
@@ -178,13 +217,46 @@ export class Orchestrator {
       sellPrice: number;
       sku: string | null;
     };
-    return this.publish(
-      autodsProductId,
-      parsed.sku ?? undefined,
-      parsed.cost,
-      parsed.sellPrice,
-      parsed.content,
-    );
+    // The margin floor may have been raised since staging: re-check now.
+    if (!meetsMarginFloor(parsed.sellPrice, parsed.cost, this.config.pricing)) {
+      throw new Error(
+        'staged price no longer meets the margin floor; re-import the product',
+      );
+    }
+    // Atomic claim: a double click or retry must not create two listings.
+    if (!this.repo.claimProductForPublish(autodsProductId)) {
+      throw new Error(
+        'product is already being published (if this persists after a crash, check Shopify, then set it back by re-importing)',
+      );
+    }
+    try {
+      return await this.publish(
+        autodsProductId,
+        parsed.sku ?? undefined,
+        parsed.cost,
+        parsed.sellPrice,
+        parsed.content,
+      );
+    } catch (error) {
+      // Definite client-side rejection => safe to retry; unknown outcome
+      // (timeout/5xx) may have created the product, so stay in 'publishing'.
+      const status = error instanceof ExternalApiError ? error.status : 0;
+      if (status >= 400 && status < 500) {
+        this.repo.setProductStatus(autodsProductId, mapping.status);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Human override for a product stuck in `publishing` after an unknown
+   * outcome (timeout/5xx/crash). Only call after checking Shopify.
+   */
+  resetPublishing(autodsProductId: string): boolean {
+    const m = this.repo.getProductMapping(autodsProductId);
+    if (m?.status !== 'publishing') return false;
+    this.repo.setProductStatus(autodsProductId, 'pending_review');
+    return true;
   }
 
   private async publish(
@@ -287,7 +359,15 @@ export class Orchestrator {
     const order = JSON.parse(row.raw_payload) as Record<string, unknown>;
 
     if (!opts.skipGate) {
+      const skus = (Array.isArray(order.line_items) ? order.line_items : [])
+        .slice(0, 200)
+        .map((li) =>
+          li && typeof li === 'object'
+            ? String((li as Record<string, unknown>).sku ?? '').trim()
+            : '',
+        );
       const gate = evaluateOrder(order, this.config.risk, {
+        costBySku: this.repo.getCostsBySku(skus),
         recentOrdersForEmail: row.email
           ? this.repo.countRecentOrdersForEmail(row.email, shopifyOrderId)
           : 0,
@@ -370,6 +450,8 @@ export class Orchestrator {
 
   /** Crash recovery: re-run orders stuck in `received` (flag is on). */
   async processReceivedOrders(): Promise<number> {
+    // Orders stuck mid-forward go to a human, never an automatic retry.
+    this.repo.recoverStuckForwarding(15);
     if (!this.config.automation.autoFulfill) return 0;
     let n = 0;
     for (const o of this.repo.listOrdersByStatus(['received'])) {
@@ -419,12 +501,12 @@ export class Orchestrator {
         if (!status.trackingNumber) continue;
         try {
           await this.shopify.createFulfillment(order.shopify_order_id, {
-            trackingNumber: status.trackingNumber,
+            trackingNumber: cleanLine(status.trackingNumber, 64),
           });
           this.repo.upsertOrder({
             shopifyOrderId: order.shopify_order_id,
             fulfillmentStatus: 'fulfilled',
-            trackingNumber: status.trackingNumber,
+            trackingNumber: cleanLine(status.trackingNumber, 64),
           });
           updated += 1;
         } catch (error) {

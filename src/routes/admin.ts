@@ -41,10 +41,28 @@ export function createAdminRouter(
   // Customer PII (raw webhook payload) is omitted unless ?raw=1 is asked for.
   router.get('/orders', (req: Request, res: Response) => {
     const raw = req.query.raw === '1';
+    const limit = Math.min(
+      Math.max(Number.parseInt(String(req.query.limit ?? ''), 10) || 200, 1),
+      1000,
+    );
+    const offset = Math.max(
+      Number.parseInt(String(req.query.offset ?? ''), 10) || 0,
+      0,
+    );
     const orders = repo
-      .listOrders()
+      .listOrders({ limit, offset })
       .map((o) => (raw ? o : { ...o, raw_payload: undefined }));
     res.json({ orders });
+  });
+
+  // Append-only status history for one order (audit trail).
+  router.get('/orders/:id/events', (req: Request, res: Response) => {
+    const id = String(req.params.id);
+    if (!repo.getOrder(id)) {
+      res.status(404).json({ error: 'order not found' });
+      return;
+    }
+    res.json({ events: repo.listOrderEvents(id) });
   });
 
   // Orders the risk gate or a supplier failure parked for a human.
@@ -107,6 +125,25 @@ export function createAdminRouter(
     },
   );
 
+  // Unstick a product left in `publishing` by an unknown outcome. Check
+  // Shopify first: if the product exists there, publishing again duplicates it.
+  router.post(
+    '/products/:autodsProductId/reset-publish',
+    (req: Request, res: Response) => {
+      if (req.body?.confirmNotListed !== true) {
+        res.status(409).json({
+          error:
+            'Check Shopify for this product first, then repeat with {"confirmNotListed": true}',
+        });
+        return;
+      }
+      const ok = orchestrator.resetPublishing(
+        String(req.params.autodsProductId),
+      );
+      res.status(ok ? 200 : 404).json({ reset: ok });
+    },
+  );
+
   router.get('/ai-content', (_req: Request, res: Response) => {
     res.json({ content: repo.listAiContent() });
   });
@@ -124,6 +161,10 @@ export function createAdminRouter(
     const { name, email, role, status } = req.body ?? {};
     if (!name || !email || !role) {
       res.status(400).json({ error: 'name, email, and role are required' });
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+      res.status(400).json({ error: 'email looks invalid' });
       return;
     }
     const member = repo.addTeamMember({
@@ -169,6 +210,10 @@ export function createAdminRouter(
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
       res.status(400).json({ error: 'invalid id' });
+      return;
+    }
+    if (!repo.getAiContent(id)) {
+      res.status(404).json({ error: 'content not found' });
       return;
     }
     repo.updateAiContentStatus(id, 'approved');

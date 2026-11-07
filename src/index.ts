@@ -11,6 +11,17 @@ import { logger } from './lib/logger.js';
 function main(): void {
   const config = loadConfig();
 
+  // A stray rejected promise must be logged, not silently kill an order run.
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ err: String(reason) }, 'Unhandled promise rejection');
+  });
+  if (config.admin.token.length < 16) {
+    logger.warn('ADMIN_TOKEN unset or too short: /admin refuses all calls');
+  }
+  if (!config.shopify.webhookSecret) {
+    logger.warn('SHOPIFY_WEBHOOK_SECRET unset: every webhook will be refused');
+  }
+
   // Initialise the database (creates the file/schema if needed).
   getDb();
 

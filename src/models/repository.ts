@@ -29,6 +29,15 @@ export interface OrderRecord {
   updated_at: string;
 }
 
+export interface OrderEvent {
+  id: number;
+  shopify_order_id: string;
+  from_status: string | null;
+  to_status: string;
+  note: string | null;
+  at: string;
+}
+
 export interface TeamMemberRecord {
   id: number;
   name: string;
@@ -129,6 +138,7 @@ export class Repository {
     trackingNumber?: string | null;
     rawPayload?: unknown;
   }): OrderRecord {
+    const before = this.getOrder(input.shopifyOrderId)?.fulfillment_status;
     this.db
       .prepare(
         `INSERT INTO orders
@@ -152,7 +162,33 @@ export class Repository {
             : JSON.stringify(input.rawPayload),
       });
 
+    const after = input.fulfillmentStatus ?? 'pending';
+    if (before !== after)
+      this.logEvent(input.shopifyOrderId, before ?? null, after);
     return this.getOrder(input.shopifyOrderId) as OrderRecord;
+  }
+
+  /** Append-only audit trail of order status changes. */
+  private logEvent(
+    orderId: string,
+    from: string | null,
+    to: string,
+    note?: string | null,
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO order_events (shopify_order_id, from_status, to_status, note)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(orderId, from, to, note ?? null);
+  }
+
+  listOrderEvents(shopifyOrderId: string): OrderEvent[] {
+    return this.db
+      .prepare(
+        'SELECT * FROM order_events WHERE shopify_order_id = ? ORDER BY id',
+      )
+      .all(shopifyOrderId) as OrderEvent[];
   }
 
   /**
@@ -176,6 +212,7 @@ export class Repository {
         JSON.stringify(input.rawPayload),
         input.email ?? null,
       );
+    if (r.changes === 1) this.logEvent(input.shopifyOrderId, null, 'received');
     return r.changes === 1;
   }
 
@@ -190,14 +227,18 @@ export class Repository {
     notes?: string | null,
   ): boolean {
     const marks = from.map(() => '?').join(',');
-    const r = this.db
-      .prepare(
-        `UPDATE orders SET fulfillment_status = ?, notes = COALESCE(?, notes),
-           updated_at = datetime('now')
-         WHERE shopify_order_id = ? AND fulfillment_status IN (${marks})`,
-      )
-      .run(to, notes ?? null, shopifyOrderId, ...from);
-    return r.changes === 1;
+    return this.db.transaction(() => {
+      const prev = this.getOrder(shopifyOrderId)?.fulfillment_status ?? null;
+      const r = this.db
+        .prepare(
+          `UPDATE orders SET fulfillment_status = ?, notes = COALESCE(?, notes),
+             updated_at = datetime('now')
+           WHERE shopify_order_id = ? AND fulfillment_status IN (${marks})`,
+        )
+        .run(to, notes ?? null, shopifyOrderId, ...from);
+      if (r.changes === 1) this.logEvent(shopifyOrderId, prev, to, notes);
+      return r.changes === 1;
+    })();
   }
 
   setOrderNotes(shopifyOrderId: string, notes: string | null): void {
@@ -236,10 +277,109 @@ export class Repository {
       .get(shopifyOrderId) as OrderRecord | undefined;
   }
 
-  listOrders(): OrderRecord[] {
+  listOrders(opts: { limit?: number; offset?: number } = {}): OrderRecord[] {
+    if (opts.limit === undefined) {
+      return this.db
+        .prepare('SELECT * FROM orders ORDER BY id DESC')
+        .all() as OrderRecord[];
+    }
     return this.db
-      .prepare('SELECT * FROM orders ORDER BY id DESC')
-      .all() as OrderRecord[];
+      .prepare('SELECT * FROM orders ORDER BY id DESC LIMIT ? OFFSET ?')
+      .all(opts.limit, opts.offset ?? 0) as OrderRecord[];
+  }
+
+  /**
+   * Orders stuck in `forwarding` (crash or hang between claiming the order
+   * and recording the supplier's answer) are moved to `needs_review`: the
+   * supplier may or may not have the order, so a human must check. Never
+   * auto-retried (could double-buy). Returns the affected order ids.
+   */
+  recoverStuckForwarding(olderThanMinutes: number): string[] {
+    const mins = Math.max(1, Math.floor(olderThanMinutes));
+    const rows = this.db
+      .prepare(
+        `SELECT shopify_order_id FROM orders
+         WHERE fulfillment_status = 'forwarding'
+           AND updated_at < datetime('now', ?)`,
+      )
+      .all(`-${mins} minutes`) as Array<{ shopify_order_id: string }>;
+    const done: string[] = [];
+    for (const r of rows) {
+      if (
+        this.transitionOrder(
+          r.shopify_order_id,
+          ['forwarding'],
+          'needs_review',
+          'Stuck while forwarding (crash or hang): check AutoDS for this order before releasing',
+        )
+      ) {
+        done.push(r.shopify_order_id);
+      }
+    }
+    return done;
+  }
+
+  /** Known supplier costs by SKU (published/staged products only). */
+  getCostsBySku(skus: string[]): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const sku of new Set(skus.filter(Boolean))) {
+      const row = this.db
+        .prepare(
+          `SELECT cost FROM product_mappings
+           WHERE autods_sku = ? AND cost IS NOT NULL AND status != 'blocked'
+           ORDER BY id DESC LIMIT 1`,
+        )
+        .get(sku) as { cost: number } | undefined;
+      if (row) out.set(sku, row.cost);
+    }
+    return out;
+  }
+
+  /**
+   * Atomically claim a product for publishing so a double click or retry
+   * cannot create two Shopify listings. Returns false if someone else holds
+   * it or it is already published/blocked.
+   */
+  claimProductForPublish(autodsProductId: string): boolean {
+    const r = this.db
+      .prepare(
+        `UPDATE product_mappings SET status = 'publishing', updated_at = datetime('now')
+         WHERE autods_product_id = ? AND status NOT IN ('published','publishing','blocked')`,
+      )
+      .run(autodsProductId);
+    return r.changes === 1;
+  }
+
+  /** Create a mapping row only if none exists; never touches an existing one. */
+  ensureProductMapping(input: {
+    autodsProductId: string;
+    autodsSku?: string | null;
+    cost?: number | null;
+    sellPrice?: number | null;
+    stock?: number | null;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO product_mappings
+           (autods_product_id, autods_sku, status, cost, sell_price, stock)
+         VALUES (?, ?, 'pending', ?, ?, ?)`,
+      )
+      .run(
+        input.autodsProductId,
+        input.autodsSku ?? null,
+        input.cost ?? null,
+        input.sellPrice ?? null,
+        input.stock ?? null,
+      );
+  }
+
+  setProductStatus(autodsProductId: string, status: string): void {
+    this.db
+      .prepare(
+        `UPDATE product_mappings SET status = ?, updated_at = datetime('now')
+         WHERE autods_product_id = ?`,
+      )
+      .run(status, autodsProductId);
   }
 
   // ---- Sync state ----
@@ -319,6 +459,11 @@ export class Repository {
     this.db
       .prepare('UPDATE ai_content SET status = ? WHERE id = ?')
       .run(status, id);
+  }
+
+  getAiContent(id: number): AiContentRecord | undefined {
+    return this.db.prepare('SELECT * FROM ai_content WHERE id = ?').get(id) as
+      AiContentRecord | undefined;
   }
 
   listAiContent(): AiContentRecord[] {

@@ -1,3 +1,5 @@
+import { cleanLine } from '../lib/sanitize.js';
+
 /**
  * Pre-fulfilment checks. Forwarding an order to a supplier spends real money
  * that cannot be recovered from a fraudulent, unpaid or malformed order, so
@@ -17,6 +19,12 @@ export interface RiskConfig {
   maxOrdersPerEmailPerDay: number;
   /** Hold unforwarded orders older than this many days (stale backlog). */
   maxOrderAgeDays: number;
+  /** Hold orders with more line items than this (0 = no limit). */
+  maxLineItems?: number;
+  /** Hold when the paid goods total is below the known supplier cost. */
+  holdBelowCost?: boolean;
+  /** Hold when a line's SKU is not a product this app listed. */
+  requireKnownSku?: boolean;
 }
 
 export interface GateResult {
@@ -32,7 +40,12 @@ const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 export function evaluateOrder(
   order: Obj,
   risk: RiskConfig,
-  ctx: { recentOrdersForEmail?: number; now?: Date } = {},
+  ctx: {
+    recentOrdersForEmail?: number;
+    now?: Date;
+    /** Supplier cost per SKU for products this app knows about. */
+    costBySku?: Map<string, number>;
+  } = {},
 ): GateResult {
   if (!risk.enabled) return { allow: true, reasons: [] };
   const reasons: string[] = [];
@@ -47,8 +60,26 @@ export function evaluateOrder(
 
   const items = Array.isArray(order.line_items) ? order.line_items : [];
   if (items.length === 0) reasons.push('no line items');
-  items.forEach((raw, i) => {
+  const maxLines = risk.maxLineItems ?? 25;
+  if (maxLines > 0 && items.length > maxLines) {
+    reasons.push(`${items.length} line items > ${maxLines}`);
+  }
+  // Only inspect the first 200 lines: a hostile payload cannot make us loop
+  // over millions of entries (the count above already holds the order).
+  items.slice(0, 200).forEach((raw, i) => {
     const item = isObj(raw) ? raw : {};
+    if (item.gift_card === true) reasons.push(`line ${i + 1}: gift card`);
+    if (item.requires_shipping === false) {
+      reasons.push(`line ${i + 1}: does not require shipping (digital?)`);
+    }
+    if (
+      risk.requireKnownSku &&
+      str(item.sku) &&
+      ctx.costBySku &&
+      !ctx.costBySku.has(str(item.sku))
+    ) {
+      reasons.push(`line ${i + 1}: SKU not listed by this app`);
+    }
     if (!str(item.sku)) reasons.push(`line ${i + 1}: missing SKU`);
     const q = Number(item.quantity ?? 1);
     if (!Number.isInteger(q) || q < 1) {
@@ -80,6 +111,27 @@ export function evaluateOrder(
     }
   }
 
+  if (risk.holdBelowCost !== false && ctx.costBySku && ctx.costBySku.size) {
+    let cost = 0;
+    for (const raw of items.slice(0, 200)) {
+      const item = isObj(raw) ? raw : {};
+      const c = ctx.costBySku.get(str(item.sku));
+      const q = Number(item.quantity ?? 1);
+      if (c !== undefined && Number.isFinite(q) && q > 0) cost += c * q;
+    }
+    // subtotal_price = goods after discounts, before shipping and tax.
+    const sub = Number(order.subtotal_price);
+    if (cost > 0 && !Number.isFinite(sub)) {
+      reasons.push(
+        'subtotal_price missing: cannot check the order covers cost',
+      );
+    } else if (cost > 0 && sub < cost) {
+      reasons.push(
+        `goods total ${sub} is below supplier cost ${Math.round(cost * 100) / 100} (discount or free order)`,
+      );
+    }
+  }
+
   const total = Number(order.total_price);
   if (Number.isFinite(total) && total > risk.maxOrderValue) {
     reasons.push(`order value ${total} exceeds ${risk.maxOrderValue}`);
@@ -102,5 +154,7 @@ export function evaluateOrder(
     }
   }
 
-  return { allow: reasons.length === 0, reasons };
+  // Reasons embed untrusted payload text (country codes, status): clean it.
+  const clean = reasons.map((r) => cleanLine(r, 200));
+  return { allow: clean.length === 0, reasons: clean };
 }

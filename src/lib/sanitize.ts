@@ -25,7 +25,9 @@ export function stripUnsafeChars(input: string): string {
 
 /** Single-line plain text, length-capped (e.g. product titles, tags). */
 export function cleanLine(input: string, maxLen: number): string {
-  return stripUnsafeChars(input)
+  // Bound the work first: the tag-strip regex is quadratic on `<<<<...`, so
+  // a megabyte of hostile supplier text must not reach it.
+  return stripUnsafeChars(input.slice(0, maxLen * 8))
     .replace(/<[^>]*>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -61,13 +63,20 @@ const ALLOWED_TAGS = new Set([
  * description needs paragraphs and lists, not links or media.
  */
 export function sanitizeHtml(input: string, maxLen = 20000): string {
-  let html = stripUnsafeChars(input).slice(0, maxLen * 2);
+  let html = stripUnsafeChars(input.slice(0, maxLen * 2));
   // Remove dangerous elements together with their content.
   html = html.replace(
-    /<\s*(script|style|iframe|object|embed|svg|math|template|noscript|form)\b[\s\S]*?<\s*\/\s*\1\s*>/gi,
+    /<\s*(script|style|iframe|object|embed|svg|math|template|noscript|form)\b[\s\S]*?(?:<\s*\/\s*\1\s*>|$)/gi,
     '',
   );
-  html = html.replace(/<!--[\s\S]*?-->/g, '');
+  // `|$`: an unclosed element/comment swallows the rest (as a browser would)
+  // and keeps these regexes linear instead of quadratic on `<script <script`.
+  html = html.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+  // The tag regex is quadratic on `x<x<x<...` when no `>` follows. Nothing
+  // after the last `>` can be a tag, so split there and treat the tail as text.
+  const lastGt = html.lastIndexOf('>');
+  const tail = html.slice(lastGt + 1);
+  html = html.slice(0, lastGt + 1);
   // Re-emit allowed tags without attributes; escape all other markup.
   html = html.replace(
     /<\s*(\/?)\s*([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g,
@@ -76,6 +85,7 @@ export function sanitizeHtml(input: string, maxLen = 20000): string {
       return ALLOWED_TAGS.has(tag) ? `<${slash}${tag}>` : '';
     },
   );
+  html += tail;
   // Any remaining stray angle brackets are text, not markup.
   html = html.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   // Restore the allowed tags we just emitted (they were escaped by the step above).

@@ -1,11 +1,16 @@
 import express, { type Router, type Request, type Response } from 'express';
 import { createLogger } from '../lib/logger.js';
-import { VerificationError } from '../lib/errors.js';
+import { ConfigError, VerificationError } from '../lib/errors.js';
 import { createRateLimiter } from '../lib/rate-limit.js';
 import { ShopifyService } from '../services/shopify.js';
 import { Orchestrator } from '../jobs/orchestrator.js';
 
 const log = createLogger('webhooks');
+
+function envRate(): number {
+  const n = Number(process.env.WEBHOOK_RATE_LIMIT_PER_MIN);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 600;
+}
 
 /**
  * Build the Shopify webhook router.
@@ -16,11 +21,14 @@ const log = createLogger('webhooks');
 export function createWebhookRouter(
   shopify: ShopifyService = new ShopifyService(),
   orchestrator: Orchestrator = new Orchestrator(),
+  rateLimitPerMin: number = envRate(),
 ): Router {
   const router = express.Router();
 
   // Webhooks are internet-facing; limit request rate to mitigate abuse.
-  router.use(createRateLimiter({ max: 120 }));
+  // Shopify retries failed deliveries and eventually drops the subscription,
+  // so the limit must sit well above a flash-sale burst (default 600/min).
+  router.use(createRateLimiter({ max: rateLimitPerMin }));
   router.use(express.raw({ type: 'application/json', limit: '2mb' }));
 
   function verify(req: Request): Record<string, unknown> {
@@ -41,13 +49,23 @@ export function createWebhookRouter(
       payload = verify(req);
     } catch (error) {
       log.warn({ err: String(error) }, 'Rejected webhook');
-      res.status(401).json({ error: 'invalid signature' });
+      if (error instanceof VerificationError) {
+        res.status(401).json({ error: 'invalid signature' });
+      } else if (error instanceof ConfigError) {
+        res.status(503).json({ error: 'webhook secret not configured' });
+      } else {
+        res.status(400).json({ error: 'malformed body' });
+      }
       return;
     }
 
+    // A validly signed body can still be `null`, an array or a scalar.
     if (
+      typeof payload !== 'object' ||
+      payload === null ||
+      Array.isArray(payload) ||
       (typeof payload.id !== 'number' && typeof payload.id !== 'string') ||
-      String(payload.id) === ''
+      String(payload.id).trim() === ''
     ) {
       res.status(400).json({ error: 'order id missing' });
       return;

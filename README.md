@@ -12,6 +12,29 @@ content and score products for viability.
 **In one line:** the Shopify + AutoDS glue that refuses to lose money: no
 duplicate or unpaid supplier orders, no listings at cost, no open admin API.
 
+## Round 3 additions (still 0.2.0, unreleased)
+
+Found by a webhook attacker, a Shopify app reviewer, a finance auditor, a
+reliability engineer, a docs reviewer and a hostile-input fuzzer:
+
+| Problem found | Fix |
+| --- | --- |
+| A validly signed webhook body of `null` hung the request and raised an unhandled rejection | Non-object bodies get 400; bad JSON is 400 (not 401); missing secret is 503; process logs stray rejections |
+| Clicking publish twice (or re-importing in auto mode) created **two Shopify products** (measured: 10 clicks, 10 products) | Atomic `publishing` claim; 4xx releases it, unknown outcome keeps it; `POST /admin/products/:id/reset-publish` after you check Shopify |
+| Orders with a 100% discount code were bought from the supplier at a loss (measured: 204 of 1000 in the bench) | Gate holds orders whose `subtotal_price` is below known supplier cost; fails closed if the field is missing |
+| Gift cards, non-shipping lines and 1000-line orders were forwarded | Held; line scan capped at 200 lines |
+| Order stuck in `forwarding` after a crash was never looked at | Moved to `needs_review` after 15 min (never auto-retried) |
+| Unlimited guesses at `ADMIN_TOKEN` | 10 failed attempts per 15 min per IP, then 429 |
+| Webhook limit 120/min could 429 a flash sale (Shopify then retries and may drop the subscription) | Default 600/min, `WEBHOOK_RATE_LIMIT_PER_MIN` |
+| Staged price approved days ago ignored a raised margin floor | Re-checked at publish |
+| No history of why an order was held/released | Append-only `order_events`, `GET /admin/orders/:id/events` |
+| Multi-megabyte supplier text stalled the sanitiser (quadratic regexes, 1.4 s on 2 MB) | Bounded and linear (8 ms) |
+
+New settings: `RISK_MAX_LINE_ITEMS` (25), `RISK_HOLD_BELOW_COST` (on),
+`RISK_REQUIRE_KNOWN_SKU` (off), `WEBHOOK_RATE_LIMIT_PER_MIN`,
+`TRUST_PROXY_HOPS` (set to 1 behind one reverse proxy so limits see real IPs).
+Re-run `npm run bench:r3`.
+
 ## What 0.2 adds (expert-review round)
 
 Found by testing as a dropshipping operator, a Shopify app developer, a
@@ -46,15 +69,16 @@ Simulated traffic: 2,000 orders, 2,608 webhook deliveries (30% duplicated),
 
 This is a simulation of the stated mix, not a measurement of a real store.
 
-### How it compares (read from vendor pages, checked 2026-11-07)
+### How it compares (read from vendor pricing pages, re-checked 2026-11-07)
 
 | | This repo | AutoDS | DSers |
 | --- | --- | --- | --- |
-| Cost | Free (MIT); you pay for Claude API use | Paid subscription, 3-day trial ([pricing](https://www.autods.com/pricing/)); plan prices not verified | Free Basic plan; Advanced $19.90/mo, Pro $49.90/mo ([pricing](https://www.dsers.com/pricing)) |
+| Cost | Free (MIT); you pay for Claude API use | Paid; page advertises a 3-day trial at $0.99/$1 (inconsistent on the page), auto-ordering add-on $9.90/mo, plan prices not shown to us ([pricing](https://www.autods.com/pricing/)) | Free Basic; Advanced $19.9/mo, Pro $49.90/mo, Enterprise $499.9/mo ([pricing](https://www.dsers.com/pricing)) |
 | AI listing text | Yes (Claude) | Yes, plus a "Claude AI chat-to-sell" feature (per pricing page) | AI image tools; AI optimisations on paid plans |
 | Auto order forwarding | Yes, with risk gate and exactly-once claim | Yes (vendor feature; internal safeguards unverified) | Bulk order automation, address auto-fix |
 | Tracking sync | Yes | Yes | Yes (14 to 21 day sync windows by plan) |
 | Auto pricing / stock sync | Pricing from margin engine; stock check at import only (no live stock sync yet) | Yes | Yes |
+| Duplicate / below-cost order protection | Yes (exactly-once claim, loss guard) | Not mentioned on pricing page; internal safeguards unverified | Not mentioned on pricing page |
 | Supplier/product research, ad spy | No | Yes | Trending products |
 | Self-hosted, auditable, your data | Yes | No | No |
 | Needs your own Shopify custom app and webhooks | Yes | No | No |
@@ -65,6 +89,16 @@ supplier networks and polish. This repo wins on being free, inspectable and
 safe-by-default for order handling, and on the margin/fraud rules being yours.
 
 ### Limits (be honest with yourself)
+
+- The below-cost check uses `subtotal_price` and the cost stored when the
+  product was imported; it assumes both are in the same currency (store
+  currency) and ignores payment fees. Field names follow Shopify's REST order
+  payload as we understand it and were not run against a live store.
+- A product left in `publishing` after a timeout needs a human: check Shopify,
+  then call `reset-publish`. There is no automatic reconciliation with Shopify.
+- Rate limits are per IP and in memory (reset on restart, not shared across
+  several instances). Auth-failure throttling needs `TRUST_PROXY_HOPS` behind a proxy.
+- `order_events` records status changes only, not who made them (one shared admin token).
 
 - The AutoDS client paths are still placeholders; use `AUTODS_MODE=mock`
   until you have API access. Whether AutoDS de-duplicates on

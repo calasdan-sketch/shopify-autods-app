@@ -163,7 +163,7 @@ export class ClaudeService {
     // tell the model it is data, not instructions (prompt-injection hygiene).
     const title = cleanLine(product.title, 300);
     const desc = product.description
-      ? stripUnsafeChars(product.description).slice(0, 4000)
+      ? stripUnsafeChars(product.description.slice(0, 4000))
       : '';
     const userPrompt = [
       'Create marketing content for the product described between the ' +

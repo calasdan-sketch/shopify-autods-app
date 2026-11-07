@@ -17,3 +17,20 @@ export function createRateLimiter(
     message: { error: 'too many requests' },
   });
 }
+
+/**
+ * Counts only FAILED requests (401/503...) so a guessed-token attack is
+ * throttled per IP without slowing the legitimate admin down.
+ */
+export function createAuthFailureLimiter(
+  options: { windowMs?: number; max?: number } = {},
+): RateLimitRequestHandler {
+  return rateLimit({
+    windowMs: options.windowMs ?? 15 * 60_000,
+    max: options.max ?? 10,
+    skipSuccessfulRequests: true,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'too many failed attempts' },
+  });
+}
