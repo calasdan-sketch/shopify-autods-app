@@ -3,6 +3,7 @@ import { loadConfig } from './config/index.js';
 import { startScheduler } from './jobs/scheduler.js';
 import { closeDb, getDb } from './models/db.js';
 import { logger } from './lib/logger.js';
+import { isValidShopDomain } from './services/shopify.js';
 
 /**
  * Application entrypoint: initialise the datastore, start the HTTP server and
@@ -22,8 +23,39 @@ function main(): void {
     logger.warn('SHOPIFY_WEBHOOK_SECRET unset: every webhook will be refused');
   }
 
+  if (config.shopify.shop && !isValidShopDomain(config.shopify.shop)) {
+    logger.error(
+      'SHOPIFY_SHOP must look like my-store.myshopify.com (no https://, no path). Refusing to start.',
+    );
+    process.exit(1);
+  }
+  const v = /^(\d{4})-(\d{2})$/.exec(config.shopify.apiVersion);
+  if (v) {
+    const ageMonths =
+      (new Date().getUTCFullYear() - Number(v[1])) * 12 +
+      (new Date().getUTCMonth() + 1 - Number(v[2]));
+    // Shopify supports each API version for about a year (verify at
+    // shopify.dev/docs/api/usage/versioning); older ones are forced forward.
+    if (ageMonths > 12) {
+      logger.warn(
+        { apiVersion: config.shopify.apiVersion },
+        'SHOPIFY_API_VERSION is more than 12 months old and may be retired: pick a current one',
+      );
+    }
+  } else if (config.shopify.apiVersion !== 'unstable') {
+    logger.warn('SHOPIFY_API_VERSION should look like 2025-10');
+  }
+
   // Initialise the database (creates the file/schema if needed).
-  getDb();
+  try {
+    getDb();
+  } catch (error) {
+    logger.error(
+      { err: String(error) },
+      'Cannot open the database. Check DATABASE_PATH exists, is writable, and is not on a read-only disk. Refusing to start.',
+    );
+    process.exit(1);
+  }
 
   const app = createApp();
   const scheduledTasks = startScheduler();

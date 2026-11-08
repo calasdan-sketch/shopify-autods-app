@@ -17,8 +17,9 @@ export function adminAuth(token: string) {
       return;
     }
     const header = req.get('authorization') ?? '';
-    const got = Buffer.from(header.replace(/^Bearer\s+/i, ''));
-    if (got.length !== want.length || !timingSafeEqual(got, want)) {
+    const m = /^Bearer\s+(.+)$/i.exec(header);
+    const got = Buffer.from(m ? m[1].trim() : '');
+    if (!m || got.length !== want.length || !timingSafeEqual(got, want)) {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }

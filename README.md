@@ -12,6 +12,31 @@ content and score products for viability.
 **In one line:** the Shopify + AutoDS glue that refuses to lose money: no
 duplicate or unpaid supplier orders, no listings at cost, no open admin API.
 
+## Round 5 additions (still 0.2.0, unreleased)
+
+Found by a Shopify app developer, a dropshipping operator, an application
+security reviewer and a GDPR/PIPEDA reviewer (details and the commands that
+proved each: `docs/ROUND5.md`):
+
+| Problem found | Fix |
+| --- | --- |
+| `npm run dry-run` (the quick start) ended in **FAIL** since round 3 | Demo order now carries `subtotal_price`; a test runs it |
+| A customer cancelling in Shopify after the order arrived was ignored: the app could still buy it from the supplier | `orders/cancelled` webhook closes unsent orders; after the supplier order it parks the order in `supplier_issue` ("cancel it at AutoDS") |
+| Customer names, addresses, phones were kept forever in `raw_payload` | Shopify's three privacy webhooks (`customers/data_request`, `customers/redact`, `shop/redact`), `GET /admin/privacy/export`, `POST /admin/privacy/erase`, `POST /admin/privacy/purge`, optional `DATA_RETENTION_DAYS`. Totals, SKUs and quantities are kept |
+| A mistyped `SHOPIFY_SHOP` (e.g. `evil.com/x#`) would receive your Shopify access token | Must be `name.myshopify.com`, else refused (and the app will not start) |
+| `AUTODS_API_BASE` over plain `http://` would send the AutoDS token in clear | Refused; must be `https://` |
+| Webhooks for another shop (header mismatch) were accepted if signed | Rejected when `X-Shopify-Shop-Domain` is present and not yours |
+| Bad JSON / oversize bodies returned an HTML page with a stack trace | Short JSON errors; unknown paths give JSON 404; `X-Powered-By` removed; `nosniff`, `no-store` |
+| Admin accepted the bare token without `Bearer` | `Bearer` required |
+| Computed price could land one cent under its own margin floor (726 of 20,000 random cases) | Price rounds up and is re-checked |
+| Logs could carry tokens or customer contact fields | pino redaction |
+| Docker ran as root | Runs as `node`, health check, `/app/data` volume |
+| No LICENSE file; stale Python description in `CLAUDE.md`; boilerplate `SECURITY.md` | Fixed. Author and copyright: Calas Automations Inc. |
+
+Register the extra Shopify webhooks (HTTPS) for `orders/cancelled`,
+`customers/data_request`, `customers/redact` and `shop/redact` at
+`/webhooks/shopify/<topic>`. Re-run `npm run bench:r5`.
+
 ## Round 3 additions (still 0.2.0, unreleased)
 
 Found by a webhook attacker, a Shopify app reviewer, a finance auditor, a
@@ -89,6 +114,19 @@ supplier networks and polish. This repo wins on being free, inspectable and
 safe-by-default for order handling, and on the margin/fraud rules being yours.
 
 ### Limits (be honest with yourself)
+
+- Round 5 additions that were **not run against a live store**: the privacy
+  and cancel webhook payload shapes follow Shopify's documentation as we
+  recall it (unverified). Erasure runs inside the request and takes roughly
+  0.5 ms per order on the test machine (2.3 s for 5,000 orders).
+- Erasing keeps order totals, SKUs and quantities. How long you must keep
+  sales records is a tax question for your accountant (unverified here); set
+  `DATA_RETENTION_DAYS` only after asking. Backups and Shopify itself keep their own copies.
+- A cancel that arrives in the few milliseconds while an order is being sent
+  to the supplier can be overwritten by the send result; check `needs_review` orders.
+- `SHOPIFY_API_VERSION` defaults to `2024-10`; the app warns when the value is
+  over 12 months old (Shopify's support window is from memory, unverified).
+- Not tested on Windows. Windows needs build tools for `better-sqlite3`.
 
 - The below-cost check uses `subtotal_price` and the cost stored when the
   product was imported; it assumes both are in the same currency (store
@@ -245,6 +283,11 @@ npm run bench        # order-safety + pricing benchmark (no network)
 | POST   | `/webhooks/shopify/orders/create`| Shopify order webhook (HMAC-verified) |
 | POST   | `/webhooks/shopify/products/update` | Shopify product webhook           |
 | POST   | `/webhooks/shopify/app/uninstalled` | App uninstall webhook             |
+| POST   | `/webhooks/shopify/orders/cancelled` | Order cancelled in Shopify        |
+| POST   | `/webhooks/shopify/customers/data_request`, `/customers/redact`, `/shop/redact` | Shopify privacy webhooks |
+| GET    | `/admin/privacy/export?email=`   | Everything stored about one customer |
+| POST   | `/admin/privacy/erase`, `/admin/privacy/purge` | Erase one customer / scrub orders older than N days (>= 30) |
+| GET    | `/admin/privacy/requests`        | Log of privacy requests (emails stored only as hashes) |
 | GET    | `/admin/store`                   | Display the connected Shopify store |
 | GET    | `/admin/products`                | List product mappings               |
 | GET    | `/admin/orders`                  | List orders                         |
@@ -268,9 +311,9 @@ three repositories in the `calasdan-sketch` account:
 
 | Repository | Intended role |
 | ---------- | ------------- |
-| `calasdan-sketch/Repository-1` | Private operations control plane for sourcing, merchandising, fulfillment, and human review |
-| `calasdan-sketch/repository1` | Public AI gateway/product surface used for external adoption and AI provider access |
-| `calasdan-sketch/new-repository-` | Public business-ops hub for shared templates, onboarding, and lightweight runbooks |
+| `calasdan-sketch/Repository-1` | Operations control plane for sourcing, merchandising, fulfillment, and human review (intended to stay private) |
+| `calasdan-sketch/repository1` | AI gateway/product surface used for external adoption and AI provider access (intended visibility: public; not checked here) |
+| `calasdan-sketch/new-repository-` | Business-ops hub for shared templates, onboarding, and lightweight runbooks (intended visibility: public; not checked here) |
 
 The admin endpoint `GET /admin/system-plan` returns this split as JSON so future
 agents can discover the intended handoffs programmatically before making

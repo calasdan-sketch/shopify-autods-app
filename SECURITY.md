@@ -1,21 +1,17 @@
 # Security Policy
 
-## Supported Versions
+This is a private-use automation app (version 0.2.0, not published to any
+registry). Only the latest commit is supported.
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+## Reporting a vulnerability
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+Email the maintainer, Calas Automations Inc., using the contact on the
+account that gave you access to this repository. Do not open a public issue
+with exploit details. No response time is promised.
 
-## Reporting a Vulnerability
+## What the app protects
 
-Use this section to tell people how to report a vulnerability.
-
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+- `/admin` needs `ADMIN_TOKEN` (16+ characters) and refuses all calls without it.
+- Webhooks are verified with HMAC-SHA256 on the raw body.
+- Customer data can be exported and erased (`/admin/privacy/*`).
+- Secrets come from environment variables only; never commit `.env`.

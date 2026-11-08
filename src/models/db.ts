@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS order_events (
 CREATE INDEX IF NOT EXISTS idx_order_events_order
   ON order_events (shopify_order_id, id);
 
+CREATE TABLE IF NOT EXISTS privacy_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  shop_domain TEXT,
+  subject_hash TEXT,
+  orders_affected INTEGER NOT NULL DEFAULT 0,
+  note TEXT,
+  received_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS team_members (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,

@@ -321,6 +321,60 @@ export class Orchestrator {
   }
 
   /**
+   * Shopify "order cancelled" webhook. Before anything reached the supplier
+   * the order is simply closed; after that a human must cancel it at AutoDS,
+   * so it is parked in `supplier_issue` (shown by /admin/orders/held).
+   */
+  handleOrderCancelled(order: Record<string, unknown>): {
+    action: 'closed' | 'needs_supplier_cancel' | 'ignored';
+  } {
+    const id = String(order.id);
+    const row = this.repo.getOrder(id);
+    if (!row) {
+      // Cancelled before we ever saw it: remember it so a late create is held.
+      this.repo.insertOrderIfNew({ shopifyOrderId: id, rawPayload: order });
+      this.repo.transitionOrder(
+        id,
+        ['received'],
+        'cancelled_by_customer',
+        'Cancelled in Shopify',
+      );
+      return { action: 'closed' };
+    }
+    if (
+      this.repo.transitionOrder(
+        id,
+        ['received', 'held', 'forward_failed', 'pending'],
+        'cancelled_by_customer',
+        'Cancelled in Shopify before it was sent to the supplier',
+      )
+    ) {
+      return { action: 'closed' };
+    }
+    const cur = this.repo.getOrder(id);
+    const live = new Set(['forwarding', 'needs_review']);
+    if (
+      cur &&
+      (cur.autods_order_id || live.has(cur.fulfillment_status)) &&
+      ![
+        'fulfilled',
+        'closed_in_shopify',
+        'supplier_issue',
+        'cancelled_by_customer',
+      ].includes(cur.fulfillment_status)
+    ) {
+      this.repo.transitionOrder(
+        id,
+        [cur.fulfillment_status],
+        'supplier_issue',
+        'Customer cancelled in Shopify AFTER the supplier order was (or may have been) placed: cancel it at AutoDS',
+      );
+      return { action: 'needs_supplier_cancel' };
+    }
+    return { action: 'ignored' };
+  }
+
+  /**
    * Handle a Shopify "order created" webhook payload: persist it and, when
    * auto-fulfill is enabled, run the risk gate and forward it to AutoDS.
    * Safe to call repeatedly for the same order (webhook retries/replays).
@@ -357,6 +411,8 @@ export class Orchestrator {
     const row = this.repo.getOrder(shopifyOrderId);
     if (!row?.raw_payload) return { forwarded: false };
     const order = JSON.parse(row.raw_payload) as Record<string, unknown>;
+    // Customer data was erased (privacy request): there is no address to ship to.
+    if (order.scrubbed === true) return { forwarded: false };
 
     if (!opts.skipGate) {
       const skus = (Array.isArray(order.line_items) ? order.line_items : [])

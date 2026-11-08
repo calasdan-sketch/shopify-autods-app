@@ -106,6 +106,7 @@ async function main(): Promise<void> {
     id: 90001,
     email: 'buyer@example.test',
     financial_status: 'paid',
+    subtotal_price: '79.98',
     total_price: '85.98',
     line_items: [{ sku: catalogue[0].sku, quantity: 2 }],
     shipping_address: {

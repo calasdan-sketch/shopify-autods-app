@@ -2,6 +2,14 @@
 
 ## 0.2.0 (unreleased)
 
+Round 5 (privacy, cancellations, hardening, tests 112 -> 140)
+- Fixed: `npm run dry-run` ended in FAIL (demo order lacked `subtotal_price`).
+- Fixed: computed price could be 1 cent under its own margin floor.
+- Added: `orders/cancelled` handling; Shopify privacy webhooks; admin export/erase/purge; optional `DATA_RETENTION_DAYS` (default off); `privacy_requests` table (additive).
+- Security: `SHOPIFY_SHOP` must be `*.myshopify.com`; `AUTODS_API_BASE` must be https; shop-domain header check; JSON errors without stack; Bearer scheme required; log redaction; Docker non-root with health check.
+- Author/maintainer and copyright: Calas Automations Inc.; added LICENSE; package marked `private` with a `files` list; SECURITY.md rewritten.
+- Behaviour change: scrubbed orders cannot be forwarded; a bare token without `Bearer` is now refused.
+
 Round 3 (hardening, tests 86 -> 112)
 - Webhook: signed non-object body no longer hangs/crashes (400); 400 vs 401 vs 503 distinguished; limit default 600/min, `WEBHOOK_RATE_LIMIT_PER_MIN`.
 - Publish and auto-import are exactly-once (`publishing` claim); `reset-publish` admin override; margin floor re-checked at publish; blocked products can be re-imported.

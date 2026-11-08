@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { getDb } from './db.js';
 
@@ -514,5 +515,150 @@ export class Repository {
     return this.db
       .prepare('SELECT * FROM team_members ORDER BY id ASC')
       .all() as TeamMemberRecord[];
+  }
+
+  // ---- Privacy (GDPR / PIPEDA) ----
+
+  /**
+   * Remove customer personal data from stored orders, keeping only what the
+   * books need (ids, status, tracking, SKU and quantity per line, money totals).
+   * `match` picks the orders: by lower-cased email and/or Shopify order ids.
+   * Returns the ids that were scrubbed. Orders still waiting to be sent to the
+   * supplier are moved to `needs_review` so nothing ships to an erased address.
+   */
+  scrubOrders(match: {
+    email?: string | null;
+    orderIds?: string[];
+    all?: boolean;
+    olderThanDays?: number;
+  }): string[] {
+    const where: string[] = [];
+    const args: Array<string | number> = [];
+    if (match.all) where.push('1=1');
+    if (match.email) {
+      where.push('email = ?');
+      args.push(match.email.trim().toLowerCase());
+    }
+    const ids = (match.orderIds ?? []).map(String).slice(0, 5000);
+    if (ids.length > 0) {
+      where.push(`shopify_order_id IN (${ids.map(() => '?').join(',')})`);
+      args.push(...ids);
+    }
+    if (where.length === 0) return [];
+    let sql = `SELECT * FROM orders WHERE (${where.join(' OR ')})`;
+    if (match.olderThanDays !== undefined) {
+      sql += ` AND created_at < datetime('now', ?)`;
+      args.push(`-${Math.max(1, Math.floor(match.olderThanDays))} days`);
+    }
+    sql += ` AND (raw_payload IS NULL OR raw_payload NOT LIKE '%"scrubbed":true%' OR email IS NOT NULL)`;
+    const rows = this.db.prepare(sql).all(...args) as OrderRecord[];
+    const waiting = new Set(['received', 'held', 'forward_failed', 'pending']);
+    const done: string[] = [];
+    const scrub = this.db.prepare(
+      `UPDATE orders SET raw_payload = ?, email = NULL,
+         updated_at = datetime('now') WHERE shopify_order_id = ?`,
+    );
+    const clearNotes = this.db.prepare(
+      `UPDATE orders SET notes = NULL WHERE shopify_order_id = ?
+         AND fulfillment_status NOT IN ('held','forward_failed','needs_review','supplier_issue')`,
+    );
+    this.db.transaction(() => {
+      for (const o of rows) {
+        let slim: Record<string, unknown> = {
+          id: o.shopify_order_id,
+          scrubbed: true,
+        };
+        try {
+          const p = JSON.parse(o.raw_payload ?? 'null') as Record<
+            string,
+            unknown
+          > | null;
+          if (p && typeof p === 'object') {
+            const lines = Array.isArray(p.line_items)
+              ? p.line_items.slice(0, 200)
+              : [];
+            slim = {
+              id: o.shopify_order_id,
+              scrubbed: true,
+              currency: typeof p.currency === 'string' ? p.currency : undefined,
+              subtotal_price: p.subtotal_price,
+              total_price: p.total_price,
+              line_items: lines.map((li) => {
+                const l = (li ?? {}) as Record<string, unknown>;
+                return { sku: l.sku, quantity: l.quantity, price: l.price };
+              }),
+            };
+          }
+        } catch {
+          /* unreadable payload: keep only the id */
+        }
+        scrub.run(JSON.stringify(slim), o.shopify_order_id);
+        // Free-text notes may repeat the customer's details.
+        clearNotes.run(o.shopify_order_id);
+        if (waiting.has(o.fulfillment_status)) {
+          this.transitionOrder(
+            o.shopify_order_id,
+            [o.fulfillment_status],
+            'needs_review',
+            'Customer data was erased; do not ship without checking with the store owner',
+          );
+        }
+        done.push(o.shopify_order_id);
+      }
+    })();
+    return done;
+  }
+
+  /** Everything stored about one customer email (for a data-access request). */
+  exportCustomer(email: string): Array<Record<string, unknown>> {
+    const rows = this.db
+      .prepare('SELECT * FROM orders WHERE email = ? ORDER BY id')
+      .all(email.trim().toLowerCase()) as OrderRecord[];
+    return rows.map((o) => ({
+      ...o,
+      raw_payload: o.raw_payload ? safeParse(o.raw_payload) : null,
+      events: this.listOrderEvents(o.shopify_order_id),
+    }));
+  }
+
+  /** Log a privacy request without keeping the customer's email in clear. */
+  logPrivacyRequest(input: {
+    kind: string;
+    shopDomain?: string | null;
+    subject?: string | null;
+    ordersAffected?: number;
+    note?: string | null;
+  }): void {
+    const hash = input.subject
+      ? createHash('sha256')
+          .update(input.subject.trim().toLowerCase())
+          .digest('hex')
+      : null;
+    this.db
+      .prepare(
+        `INSERT INTO privacy_requests (kind, shop_domain, subject_hash, orders_affected, note)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        input.kind,
+        input.shopDomain ?? null,
+        hash,
+        input.ordersAffected ?? 0,
+        input.note ?? null,
+      );
+  }
+
+  listPrivacyRequests(): Array<Record<string, unknown>> {
+    return this.db
+      .prepare('SELECT * FROM privacy_requests ORDER BY id DESC LIMIT 500')
+      .all() as Array<Record<string, unknown>>;
+  }
+}
+
+function safeParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
   }
 }

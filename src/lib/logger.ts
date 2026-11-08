@@ -13,6 +13,22 @@ export const logger = pino({
   level: config.logLevel,
   base: { service: 'shopify-autods-claude' },
   timestamp: pino.stdTimeFunctions.isoTime,
+  // Never write credentials or customer contact details to logs.
+  redact: {
+    paths: [
+      '*.authorization',
+      '*.headers.authorization',
+      '*.headers["x-shopify-access-token"]',
+      '*.accessToken',
+      '*.apiToken',
+      '*.apiKey',
+      '*.email',
+      '*.phone',
+      '*.shipping_address',
+      '*.billing_address',
+    ],
+    censor: '[redacted]',
+  },
 });
 
 /**

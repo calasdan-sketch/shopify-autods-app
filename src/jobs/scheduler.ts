@@ -3,6 +3,7 @@ import type { AppConfig } from '../config/index.js';
 import { loadConfig } from '../config/index.js';
 import { createLogger } from '../lib/logger.js';
 import { Orchestrator } from './orchestrator.js';
+import { Repository } from '../models/repository.js';
 
 const log = createLogger('scheduler');
 
@@ -35,6 +36,36 @@ export function startScheduler(
     { name: 'order-tracking-sync' },
   );
 
+  const tasks = [trackingTask];
+  const days = config.privacy.retentionDays;
+  if (days >= 30) {
+    // Daily at 03:17 server time.
+    tasks.push(
+      cron.schedule(
+        '17 3 * * *',
+        () => {
+          try {
+            const repo = new Repository();
+            const done = repo.scrubOrders({ all: true, olderThanDays: days });
+            if (done.length > 0) {
+              repo.logPrivacyRequest({
+                kind: 'retention_purge',
+                ordersAffected: done.length,
+                note: `scheduled, older than ${days} days`,
+              });
+            }
+            log.info({ scrubbed: done.length }, 'Retention purge done');
+          } catch (error) {
+            log.error({ err: String(error) }, 'Retention purge failed');
+          }
+        },
+        { name: 'privacy-retention' },
+      ),
+    );
+  } else if (days > 0) {
+    log.warn({ days }, 'DATA_RETENTION_DAYS below 30 is ignored');
+  }
+
   log.info({ syncCron }, 'Scheduler started');
-  return [trackingTask];
+  return tasks;
 }

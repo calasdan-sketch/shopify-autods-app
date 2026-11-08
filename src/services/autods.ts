@@ -71,6 +71,10 @@ export class AutoDSService implements AutoDSClient {
   }
 
   private url(path: string): string {
+    // The AutoDS token is sent here: never over plain http.
+    if (!/^https:\/\//i.test(this.config.apiBase)) {
+      throw new ConfigError('AUTODS_API_BASE must start with https://');
+    }
     return `${this.config.apiBase.replace(/\/$/, '')}${path}`;
   }
 

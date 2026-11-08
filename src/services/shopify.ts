@@ -7,6 +7,13 @@ import { createLogger } from '../lib/logger.js';
 
 const log = createLogger('shopify');
 
+const SHOP_DOMAIN = /^[a-z0-9][a-z0-9-]{0,60}\.myshopify\.com$/;
+
+/** True for a plain `name.myshopify.com` host (no scheme, path or port). */
+export function isValidShopDomain(shop: string): boolean {
+  return SHOP_DOMAIN.test(shop);
+}
+
 /** Nothing left to fulfil for this order in Shopify. */
 export class NoOpenFulfillmentOrderError extends AppError {}
 
@@ -60,6 +67,12 @@ export class ShopifyService {
     if (!this.config.shop) {
       throw new ConfigError('SHOPIFY_SHOP is not configured');
     }
+    // The access token is sent to this host, so it must be a Shopify host.
+    if (!isValidShopDomain(this.config.shop)) {
+      throw new ConfigError(
+        'SHOPIFY_SHOP must look like my-store.myshopify.com (no https://, no path)',
+      );
+    }
     return `https://${this.config.shop}/admin/api/${this.config.apiVersion}`;
   }
 
@@ -97,6 +110,17 @@ export class ShopifyService {
       return false;
     }
     return timingSafeEqual(expected, received);
+  }
+
+  /**
+   * Cheap extra check: if Shopify names the shop in the request header and it
+   * is not ours, refuse. A missing header is allowed (older senders).
+   */
+  isOwnShop(shopDomainHeader: string | undefined): boolean {
+    if (!shopDomainHeader) return true;
+    return (
+      shopDomainHeader.trim().toLowerCase() === this.config.shop.toLowerCase()
+    );
   }
 
   /**

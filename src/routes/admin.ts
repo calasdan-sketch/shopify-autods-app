@@ -144,6 +144,66 @@ export function createAdminRouter(
     },
   );
 
+  // ---- Privacy: answer a customer's access / erasure request ----
+  const emailParam = (v: unknown): string | null => {
+    const e = typeof v === 'string' ? v.trim().toLowerCase() : '';
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) && e.length <= 254 ? e : null;
+  };
+
+  // Everything stored about one customer email (contains personal data).
+  router.get('/privacy/export', (req: Request, res: Response) => {
+    const email = emailParam(req.query.email);
+    if (!email) {
+      res.status(400).json({ error: 'email query parameter required' });
+      return;
+    }
+    const orders = repo.exportCustomer(email);
+    repo.logPrivacyRequest({
+      kind: 'admin_export',
+      subject: email,
+      ordersAffected: orders.length,
+    });
+    res.json({ orders });
+  });
+
+  // Erase one customer's personal data from stored orders.
+  router.post('/privacy/erase', (req: Request, res: Response) => {
+    const email = emailParam(req.body?.email);
+    if (!email) {
+      res.status(400).json({ error: 'a valid email is required' });
+      return;
+    }
+    const done = repo.scrubOrders({ email });
+    repo.logPrivacyRequest({
+      kind: 'admin_erase',
+      subject: email,
+      ordersAffected: done.length,
+    });
+    res.json({ scrubbed: done.length });
+  });
+
+  // Retention: scrub customer data from orders older than N days.
+  router.post('/privacy/purge', (req: Request, res: Response) => {
+    const days: unknown = req.body?.olderThanDays;
+    if (typeof days !== 'number' || !Number.isInteger(days) || days < 30) {
+      res
+        .status(400)
+        .json({ error: 'olderThanDays must be a whole number, at least 30' });
+      return;
+    }
+    const done = repo.scrubOrders({ all: true, olderThanDays: days });
+    repo.logPrivacyRequest({
+      kind: 'retention_purge',
+      ordersAffected: done.length,
+      note: `older than ${days} days`,
+    });
+    res.json({ scrubbed: done.length });
+  });
+
+  router.get('/privacy/requests', (_req: Request, res: Response) => {
+    res.json({ requests: repo.listPrivacyRequests() });
+  });
+
   router.get('/ai-content', (_req: Request, res: Response) => {
     res.json({ content: repo.listAiContent() });
   });

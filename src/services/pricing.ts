@@ -34,6 +34,8 @@ export interface UnitEconomics {
 }
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+/** Round UP to a whole cent (tiny epsilon absorbs float noise). */
+const ceil2 = (n: number): number => Math.ceil(n * 100 - 1e-7) / 100;
 
 export function validatePricingConfig(p: PricingConfig): void {
   const feeAndMargin = p.paymentFeePct + p.targetMarginPct;
@@ -70,7 +72,17 @@ export function computeSellPrice(cost: number, p: PricingConfig): number {
     price = Math.ceil(price) - 0.01;
     if (price < (cost + p.paymentFixedFee) / denom) price += 1;
   }
-  return round2(price);
+  // Round up, never down: rounding down could land a hair under the margin
+  // floor and make the app refuse its own price.
+  let out = ceil2(price);
+  // Fees are rounded to cents in unitEconomics, which can shave a hair off the
+  // margin; step up a cent at a time (bounded) until the target is met.
+  for (let i = 0; i < 5; i++) {
+    if (unitEconomics(out, cost, p).marginPct + 1e-9 >= p.targetMarginPct)
+      break;
+    out = round2(out + 0.01);
+  }
+  return out;
 }
 
 export function unitEconomics(

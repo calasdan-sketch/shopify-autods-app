@@ -50,6 +50,7 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       holdBelowCost: true,
       requireKnownSku: false,
     },
+    privacy: { retentionDays: 0 },
     admin: { token: 'admin-secret' },
     compliance: { blockedTerms: ['replica'] },
     automation: {

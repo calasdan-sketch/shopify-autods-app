@@ -79,6 +79,12 @@ const configSchema = z.object({
     requireKnownSku: z.boolean(),
   }),
 
+  /** Customer-data retention (PIPEDA / GDPR "keep only as long as needed"). */
+  privacy: z.object({
+    /** Scrub customer data from orders older than this many days. 0 = off. */
+    retentionDays: numFromEnv(0),
+  }),
+
   admin: z.object({
     /** Bearer token required for /admin. Unset = /admin refuses all calls. */
     token: z.string().default(''),
@@ -154,6 +160,7 @@ export function loadConfig(): AppConfig {
       holdBelowCost: process.env.RISK_HOLD_BELOW_COST !== 'false',
       requireKnownSku: process.env.RISK_REQUIRE_KNOWN_SKU === 'true',
     },
+    privacy: { retentionDays: process.env.DATA_RETENTION_DAYS },
     admin: { token: process.env.ADMIN_TOKEN },
     compliance: {
       blockedTerms: (

@@ -6,9 +6,9 @@ Shopify dropshipping agent — automates product research and listing for Dan's 
 Finds profitable products (fast-moving, high-margin), imports them to Shopify, and manages pricing/inventory automatically.
 
 ## Stack
-- Python
-- Shopify Admin API
-- AliExpress / supplier scraping for product data
+- Node.js >= 20, TypeScript, Express, SQLite (better-sqlite3), vitest
+- Shopify Admin REST API (custom app) and AutoDS (mock mode until API access)
+- Claude (Anthropic) for listing text; no supplier scraping
 
 ## Rules
 - Only source products with clear demand signals (bought often, sells fast)
@@ -17,4 +17,4 @@ Finds profitable products (fast-moving, high-margin), imports them to Shopify, a
 - Target categories: office supplies, home goods, pens, erasers, sponges — everyday consumables with steady repeat demand
 
 ## Owner
-Dan Calas / Calas Automations Inc. / DC Enterprises, Winnipeg MB, Canada.
+Calas Automations Inc., Winnipeg MB, Canada.
